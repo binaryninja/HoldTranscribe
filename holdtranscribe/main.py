@@ -6,7 +6,7 @@ Requirements:
   pip install faster-whisper sounddevice pynput webrtcvad pyperclip notify2 numpy
 """
 
-import os, sys, tempfile, threading, time, wave, subprocess, argparse, psutil
+import os, sys, tempfile, threading, time, wave, subprocess, argparse, psutil, platform
 from collections import deque
 
 import numpy as np
@@ -29,6 +29,22 @@ def parse_args():
 # Global variables (will be set in main)
 DEBUG = False
 FAST_MODE = False
+
+def get_platform_hotkey():
+    """Get platform-specific hotkey configuration"""
+    system = platform.system().lower()
+
+    if system == 'darwin':  # macOS
+        hotkey = {keyboard.Key.ctrl, keyboard.Key.alt, keyboard.Key.cmd, keyboard.Key.space}
+        message = "Hold Ctrl+Option+Cmd+Space to speak. Release to transcribe."
+    elif system == 'linux':
+        hotkey = {keyboard.Key.ctrl, mouse.Button.button9}
+        message = "Hold Ctrl+Mouse Forward Button to speak. Release to transcribe."
+    else:  # Windows or other
+        hotkey = {keyboard.Key.ctrl, keyboard.Key.space}
+        message = "Hold Ctrl+Space to speak. Release to transcribe."
+
+    return hotkey, message
 
 def debug_print(*args_list, **kwargs):
     """Print debug messages only when DEBUG is enabled"""
@@ -411,7 +427,8 @@ def main():
     FAST_MODE = args.fast
 
     # ───────── CONFIG ─────────────────────────────────────────────────────────────
-    HOTKEY = {keyboard.Key.ctrl, mouse.Button.button9}  # button9 = forward button (button8 = back)
+    HOTKEY, HOTKEY_MESSAGE = get_platform_hotkey()
+    debug_print(f"Platform: {platform.system()}")
     debug_print(f"HOTKEY set to: {HOTKEY}")
     SAMPLE_RATE = 16_000
     FRAME_MS = 30                                   # 30‑ms frames for VAD
@@ -454,7 +471,7 @@ def main():
     speech_frames_count = 0
     silence_frames_count = 0
 
-    startup_message = "Hold Ctrl+Mouse Forward Button to speak. Release to transcribe."
+    startup_message = HOTKEY_MESSAGE
     if DEBUG:
         startup_message += "\n[DEBUG MODE ENABLED - Extensive logging active]"
     startup_message += "\n(Run in background or add to your DE autostart.)"

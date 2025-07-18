@@ -151,11 +151,11 @@ pip install holdtranscribe
 ### Basic Usage (All Platforms)
 
 ```bash
-# Run with default settings
-python voice_hold_to_clip.py
-
-# Or if installed via pip
+# Run with default settings (if installed via pip)
 holdtranscribe
+
+# Or if using the script directly
+python voice_hold_to_clip.py
 ```
 
 ### Command Line Options
@@ -172,17 +172,17 @@ holdtranscribe
 
 **Linux/macOS:**
 ```bash
-./voice_hold_to_clip.py --model tiny --beam-size 1
+holdtranscribe --model tiny --beam-size 1
 ```
 
 **Windows (Command Prompt):**
 ```cmd
-python voice_hold_to_clip.py --model tiny --beam-size 1
+holdtranscribe --model tiny --beam-size 1
 ```
 
 **Windows (PowerShell):**
 ```powershell
-python voice_hold_to_clip.py --model tiny --beam-size 1
+holdtranscribe --model tiny --beam-size 1
 ```
 
 ---
@@ -204,12 +204,13 @@ python voice_hold_to_clip.py --model tiny --beam-size 1
    After=graphical-session.target
 
    [Service]
-   ExecStart=/usr/bin/python3 /path/to/holdtranscribe/voice_hold_to_clip.py --model large-v3 --beam-size 1
+   Type=simple
+   ExecStart=/usr/bin/holdtranscribe --model large-v3 --beam-size 1
    Restart=always
    RestartSec=5
    Environment=DISPLAY=:0
    Environment=XDG_RUNTIME_DIR=/run/user/%i
-   WorkingDirectory=/path/to/holdtranscribe
+   WorkingDirectory=%h
 
    [Install]
    WantedBy=default.target
@@ -241,8 +242,7 @@ python voice_hold_to_clip.py --model tiny --beam-size 1
        <string>com.holdtranscribe</string>
        <key>ProgramArguments</key>
        <array>
-           <string>/usr/bin/python3</string>
-           <string>/path/to/holdtranscribe/voice_hold_to_clip.py</string>
+           <string>/usr/local/bin/holdtranscribe</string>
            <string>--model</string>
            <string>large-v3</string>
            <string>--beam-size</string>
@@ -252,8 +252,6 @@ python voice_hold_to_clip.py --model tiny --beam-size 1
        <true/>
        <key>KeepAlive</key>
        <true/>
-       <key>WorkingDirectory</key>
-       <string>/path/to/holdtranscribe</string>
    </dict>
    </plist>
    EOF
@@ -270,8 +268,7 @@ python voice_hold_to_clip.py --model tiny --beam-size 1
 1. **Create batch file for easier management:**
    ```batch
    @echo off
-   cd /d "C:\path\to\holdtranscribe"
-   python voice_hold_to_clip.py --model large-v3 --beam-size 1
+   holdtranscribe --model large-v3 --beam-size 1
    ```
    Save as `holdtranscribe.bat`
 
@@ -358,7 +355,7 @@ launchctl list | grep holdtranscribe
 ```bash
 # Clear cache and retry
 rm -rf ~/.cache/huggingface/transformers/
-python voice_hold_to_clip.py --model tiny  # Start with smaller model
+holdtranscribe --model tiny  # Start with smaller model
 ```
 
 **Audio device issues:**
@@ -402,7 +399,7 @@ xhost +local:
 **"Operation not permitted" errors:**
 ```bash
 # Try running with sudo temporarily to identify permission issue
-sudo python voice_hold_to_clip.py --debug
+sudo holdtranscribe --debug
 ```
 
 **Python/PortAudio conflicts:**
@@ -447,19 +444,19 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 **For slower systems:**
 ```bash
 # Use fastest settings
-python voice_hold_to_clip.py --model tiny --beam-size 1 --fast
+holdtranscribe --model tiny --beam-size 1 --fast
 ```
 
 **For better accuracy:**
 ```bash
 # Use larger model with more processing
-python voice_hold_to_clip.py --model large-v3 --beam-size 5
+holdtranscribe --model large-v3 --beam-size 5
 ```
 
 **Memory management:**
 ```bash
 # Monitor memory usage
-python voice_hold_to_clip.py --debug
+holdtranscribe --debug
 ```
 
 ---

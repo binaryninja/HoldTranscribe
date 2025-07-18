@@ -5,7 +5,7 @@ A lightweight tool that records audio while you hold a configurable hotkey,
 transcribes speech using OpenAI's Whisper model, and copies the result to your clipboard.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __author__ = "binaryninja"
 __email__ = ""
 __description__ = "Hotkey-Activated Voice-to-Clipboard Transcriber"

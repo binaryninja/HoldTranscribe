@@ -17,16 +17,18 @@ from faster_whisper import WhisperModel
 import pyperclip, notify2
 
 # ───────── CLI ARGUMENTS ──────────────────────────────────────────────────────
-parser = argparse.ArgumentParser(description="Voice-to-clipboard transcription with hold-to-record")
-parser.add_argument("--debug", action="store_true", help="Enable extensive debugging output")
-parser.add_argument("--fast", action="store_true", help="Use faster model and settings (lower accuracy)")
-parser.add_argument("--model", default="large-v3", choices=["tiny", "base", "small", "medium", "large-v2", "large-v3"],
-                    help="Whisper model size (default: large-v3)")
-parser.add_argument("--beam-size", type=int, default=5, help="Beam size for transcription (1=fastest, 5=default)")
-args = parser.parse_args()
+def parse_args():
+    parser = argparse.ArgumentParser(description="Voice-to-clipboard transcription with hold-to-record")
+    parser.add_argument("--debug", action="store_true", help="Enable extensive debugging output")
+    parser.add_argument("--fast", action="store_true", help="Use faster model and settings (lower accuracy)")
+    parser.add_argument("--model", default="large-v3", choices=["tiny", "base", "small", "medium", "large-v2", "large-v3"],
+                        help="Whisper model size (default: large-v3)")
+    parser.add_argument("--beam-size", type=int, default=5, help="Beam size for transcription (1=fastest, 5=default)")
+    return parser.parse_args()
 
-DEBUG = args.debug
-FAST_MODE = args.fast
+# Global variables (will be set in main)
+DEBUG = False
+FAST_MODE = False
 
 def debug_print(*args_list, **kwargs):
     """Print debug messages only when DEBUG is enabled"""
@@ -58,41 +60,19 @@ def detect_device():
     debug_print("Using CPU device")
     return "cpu"
 
-# ───────── CONFIG ─────────────────────────────────────────────────────────────
-HOTKEY = {keyboard.Key.ctrl, mouse.Button.button9}  # button9 = forward button (button8 = back)
-debug_print(f"HOTKEY set to: {HOTKEY}")
-SAMPLE_RATE = 16_000
-FRAME_MS = 30                                   # 30‑ms frames for VAD
-
-# Model selection based on arguments
-if FAST_MODE:
-    MODEL_NAME = "base"                         # Fast model for speed
-    BEAM_SIZE = 1                               # Fastest beam search
-    debug_print("FAST MODE: Using base model with beam_size=1")
-else:
-    MODEL_NAME = args.model                     # User-specified or default
-    BEAM_SIZE = args.beam_size                  # User-specified or default
-
-DEVICE = detect_device()                        # Auto-detect CUDA GPU or fallback to CPU
-
-debug_print(f"Configuration:")
-debug_print(f"  Sample Rate: {SAMPLE_RATE}")
-debug_print(f"  Frame MS: {FRAME_MS}")
-debug_print(f"  Model: {MODEL_NAME}")
-debug_print(f"  Beam Size: {BEAM_SIZE}")
-debug_print(f"  Fast Mode: {FAST_MODE}")
-debug_print(f"  Device: {DEVICE} {'(GPU accelerated)' if DEVICE == 'cuda' else '(CPU only)'}")
-debug_print(f"  Memory usage at startup: {get_memory_usage():.1f} MB")
-
-# ───────── STATE VARIABLES ────────────────────────────────────────────────────
-pressed = set()
-vad = webrtcvad.Vad(2)                          # 0–3: 3 = most aggressive
-frames = deque()                                # raw bytes
+# Global variables (will be initialized in main)
+HOTKEY = None
+SAMPLE_RATE = None
+FRAME_MS = None
+MODEL_NAME = None
+BEAM_SIZE = None
+DEVICE = None
+pressed = None
+vad = None
+frames = None
 stream = None
 model = None
-lock = threading.Lock()
-
-# Performance tracking
+lock = None
 stream_start_time = None
 stream_stop_time = None
 transcription_start_time = None
@@ -100,8 +80,6 @@ model_load_time = None
 total_frames_collected = 0
 speech_frames_count = 0
 silence_frames_count = 0
-
-debug_print(f"VAD aggressiveness level: 2")
 debug_print(f"Initial state initialized")
 
 # ───────── AUDIO HELPERS ──────────────────────────────────────────────────────
@@ -419,8 +397,63 @@ def transcribe_and_copy(audio_data: bytes):
 
     print(time.strftime('%H:%M:%S'), "→", text)
 
-# ───────── MAIN LOOP ──────────────────────────────────────────────────────────
-if __name__ == "__main__":
+# ───────── MAIN FUNCTION ──────────────────────────────────────────────────────
+def main():
+    """Main entry point for the HoldTranscribe application."""
+    global DEBUG, FAST_MODE, MODEL_NAME, DEVICE, BEAM_SIZE, model
+    global HOTKEY, SAMPLE_RATE, FRAME_MS, pressed, vad, frames, stream, lock
+    global stream_start_time, stream_stop_time, transcription_start_time
+    global model_load_time, total_frames_collected, speech_frames_count, silence_frames_count
+
+    # Parse command line arguments
+    args = parse_args()
+    DEBUG = args.debug
+    FAST_MODE = args.fast
+
+    # ───────── CONFIG ─────────────────────────────────────────────────────────────
+    HOTKEY = {keyboard.Key.ctrl, mouse.Button.button9}  # button9 = forward button (button8 = back)
+    debug_print(f"HOTKEY set to: {HOTKEY}")
+    SAMPLE_RATE = 16_000
+    FRAME_MS = 30                                   # 30‑ms frames for VAD
+
+    # Model selection based on arguments
+    if FAST_MODE:
+        MODEL_NAME = "base"                         # Fast model for speed
+        BEAM_SIZE = 1                               # Fastest beam search
+        debug_print("FAST MODE: Using base model with beam_size=1")
+    else:
+        MODEL_NAME = args.model                     # User-specified or default
+        BEAM_SIZE = args.beam_size                  # User-specified or default
+
+    DEVICE = detect_device()                        # Auto-detect CUDA GPU or fallback to CPU
+
+    debug_print(f"Configuration:")
+    debug_print(f"  Sample Rate: {SAMPLE_RATE}")
+    debug_print(f"  Frame MS: {FRAME_MS}")
+    debug_print(f"  Model: {MODEL_NAME}")
+    debug_print(f"  Beam Size: {BEAM_SIZE}")
+    debug_print(f"  Fast Mode: {FAST_MODE}")
+    debug_print(f"  Device: {DEVICE} {'(GPU accelerated)' if DEVICE == 'cuda' else '(CPU only)'}")
+    debug_print(f"  Memory usage at startup: {get_memory_usage():.1f} MB")
+
+    # ───────── STATE VARIABLES ────────────────────────────────────────────────────
+    pressed = set()
+    vad = webrtcvad.Vad(2)                          # 0–3: 3 = most aggressive
+    debug_print(f"VAD aggressiveness level: 2")
+    frames = deque()                                # raw bytes
+    stream = None
+    model = None
+    lock = threading.Lock()
+
+    # Performance tracking
+    stream_start_time = None
+    stream_stop_time = None
+    transcription_start_time = None
+    model_load_time = None
+    total_frames_collected = 0
+    speech_frames_count = 0
+    silence_frames_count = 0
+
     startup_message = "Hold Ctrl+Mouse Forward Button to speak. Release to transcribe."
     if DEBUG:
         startup_message += "\n[DEBUG MODE ENABLED - Extensive logging active]"
@@ -475,3 +508,7 @@ if __name__ == "__main__":
         debug_print(f"ERROR in main loop: {e}")
     finally:
         debug_print("Application shutting down...")
+
+
+if __name__ == "__main__":
+    main()

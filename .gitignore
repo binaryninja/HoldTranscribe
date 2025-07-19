@@ -143,9 +143,16 @@ temp_audio.*
 
 # Model cache and downloaded models
 .cache/
-models/
+# Ignore downloaded model files but not source code
+*.bin
+*.safetensors
+*.gguf
+*.pth
+*.pt
+# Ignore model cache directories
 whisper_cache/
 transformers_cache/
+huggingface_cache/
 
 # Log files
 *.log

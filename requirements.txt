@@ -13,6 +13,12 @@ git+https://github.com/huggingface/transformers
 mistral-common[audio]>=1.8.1
 accelerate>=1.9.0
 
+# Dia TTS support dependencies
+git+https://github.com/nari-labs/dia.git
+
+# ElevenLabs TTS support dependencies
+elevenlabs>=1.0.0
+
 # PyTorch (required for Voxtral support)
 torch>=2.0.0
 # torchvision>=0.15.0  # Optional

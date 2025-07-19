@@ -50,6 +50,13 @@ gpu = [
     "torchvision>=0.15.0",
     "torchaudio>=2.0.0",
 ]
+tts = [
+    "torch>=2.0.0",
+    "moshi>=0.2.10",
+    "sphn>=0.1.0",
+    "sounddevice>=0.4.6",
+    "huggingface_hub>=0.16.0",
+]
 dev = [
     "pytest>=7.0.0",
     "black>=22.0.0",

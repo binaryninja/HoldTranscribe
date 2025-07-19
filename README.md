@@ -11,12 +11,15 @@ A lightweight tool that records audio while you hold a configurable hotkey, tran
 * Hold-to-record using a customizable hotkey combination
 * GPU acceleration with automatic CUDA detection and CPU fallback
 * Instant copy of transcribed text to the clipboard
+* **AI Assistant Mode with Voxtral** for intelligent voice interactions
+* **Text-to-Speech (TTS) output** using ElevenLabs for assistant responses
 * Persistent model instance for low-latency transcription
 * Configurable model size and beam search settings
 * Detailed debug output and performance metrics
 * Cross-platform support (Linux, macOS, Windows)
 * Voice Activity Detection (VAD) for clean audio capture
 * Auto-start service integration for all platforms
+* Dual hotkey system: separate keys for transcription and AI assistant
 
 ---
 
@@ -71,6 +74,17 @@ pip install holdtranscribe
 2. **Install Python dependencies:**
    ```bash
    pip install faster-whisper sounddevice pynput webrtcvad pyperclip notify2 numpy psutil
+   
+   # For AI Assistant support
+   pip install git+https://github.com/huggingface/transformers
+   pip install mistral-common[audio]
+   
+   # For Text-to-Speech support (ElevenLabs - default)
+   pip install elevenlabs>=1.0.0
+   
+   # Alternative TTS models
+   pip install git+https://github.com/nari-labs/dia.git  # For DIA TTS
+   pip install moshi>=0.2.10 sphn>=0.1.0  # For Moshi TTS
    ```
 
 3. **Optional GPU acceleration:**
@@ -161,28 +175,176 @@ python voice_hold_to_clip.py
 ### Command Line Options
 
 ```bash
---model <size>       Whisper model size (tiny, base, small, medium, large-v3). Default: large-v3
---beam-size <n>      Beam search width (1 for fastest). Default: 5
+--model <size>       Model to use: Whisper (tiny, base, small, medium, large-v3) or 
+                     Voxtral (mistralai/Voxtral-Mini-3B-2507). Default: large-v3
+--beam-size <n>      Beam search width for Whisper (1 for fastest). Default: 5
 --fast               Shorthand for `--model base --beam-size 1`
 --debug              Enable verbose timing and resource metrics
 --device <cpu|cuda>  Force CPU or GPU mode
+--tts                Enable text-to-speech output for AI assistant responses
+--tts-model <model>  TTS model to use. Default: ElevenLabs (eleven_multilingual_v2)
+                     Options: elevenlabs, eleven_turbo_v2_5, moshi, dia models
+--tts-output <file>  Output file for TTS audio. Default: assistant_response.mp3
 ```
+
+### Hotkey Controls
+
+The application supports dual hotkey operation:
+
+**Linux/Windows:**
+- **Ctrl + Mouse Button 9 (Forward)**: Transcription mode
+- **Ctrl + Mouse Button 8 (Back)**: AI Assistant mode
+
+**macOS:**
+- **Cmd + Mouse Button 9 (Forward)**: Transcription mode  
+- **Cmd + Mouse Button 8 (Back)**: AI Assistant mode
+
+### AI Assistant Mode with TTS
+
+Enable intelligent voice interactions with text-to-speech responses:
+
+```bash
+# Basic AI assistant with Voxtral
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507
+
+# AI assistant with TTS enabled
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts
+
+# Custom TTS model (alternative models)
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts --tts-model moshi
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts --tts-model dia
+```
+
+### ElevenLabs TTS Setup (Default)
+
+HoldTranscribe now uses ElevenLabs as the default TTS provider for high-quality voice synthesis.
+
+#### Getting Started
+
+1. **Get an API Key:**
+   - Visit [ElevenLabs](https://elevenlabs.io/app/settings/api-keys)
+   - Sign up for an account (free tier available with 10,000 characters/month)
+   - Generate an API key
+
+2. **Set Your API Key:**
+   ```bash
+   # Linux/macOS
+   export ELEVENLABS_API_KEY="your_api_key_here"
+   
+   # Windows Command Prompt
+   set ELEVENLABS_API_KEY=your_api_key_here
+   
+   # Windows PowerShell
+   $env:ELEVENLABS_API_KEY="your_api_key_here"
+   ```
+
+3. **Test ElevenLabs Integration:**
+   ```bash
+   # Run the integration test
+   python test_elevenlabs_integration.py
+   
+   # Run the example script
+   python examples/elevenlabs_tts_example.py
+   ```
+
+#### ElevenLabs Model Options
+
+```bash
+# Default high-quality model
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts
+
+# Fast synthesis (lower latency)
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts --tts-model eleven_turbo_v2_5
+
+# Fastest synthesis (minimal latency)
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts --tts-model eleven_flash_v2_5
+
+# Multilingual support
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts --tts-model eleven_multilingual_v2
+```
+
+#### Voice Selection
+
+ElevenLabs offers various voices. You can customize voice settings programmatically:
+
+```python
+from holdtranscribe.models import ModelFactory
+import os
+
+# Create TTS model with custom voice
+tts_model = ModelFactory.create_tts_model(
+    "elevenlabs", 
+    "cpu",
+    api_key=os.getenv("ELEVENLABS_API_KEY")
+)
+
+if tts_model.load():
+    # List available voices
+    voices = tts_model.get_available_voices()
+    
+    # Set specific voice and parameters
+    tts_model.set_voice_parameters(
+        voice_id="21m00Tcm4TlvDq8ikWAM",  # Rachel (default)
+        stability=0.7,
+        similarity_boost=0.8
+    )
+```
+
+#### Troubleshooting ElevenLabs
+
+**API Key Issues:**
+```bash
+# Verify API key is set
+echo $ELEVENLABS_API_KEY
+
+# Test API connection
+python -c "from elevenlabs import ElevenLabs; print('✅ Connected')"
+```
+
+**Network Issues:**
+- Ensure internet connectivity
+- Check firewall settings
+- Verify ElevenLabs service status
+
+**Usage Limits:**
+- Monitor character usage in your ElevenLabs dashboard
+- Free tier: 10,000 characters/month
+- Paid plans available for higher usage
+
+**Usage:**
+1. Hold the assistant hotkey (Ctrl/Cmd + Mouse Back Button)
+2. Speak your question or request
+3. Release the hotkey
+4. The AI response is copied to clipboard
+5. If TTS is enabled, audio is generated and played automatically
 
 ### Platform-Specific Examples
 
 **Linux/macOS:**
 ```bash
+# Fast transcription only
 holdtranscribe --model tiny --beam-size 1
+
+# AI assistant with TTS
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts
 ```
 
 **Windows (Command Prompt):**
 ```cmd
+# Fast transcription only
 holdtranscribe --model tiny --beam-size 1
+
+# AI assistant with TTS
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts
 ```
 
 **Windows (PowerShell):**
 ```powershell
+# Fast transcription only
 holdtranscribe --model tiny --beam-size 1
+
+# AI assistant with TTS
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts
 ```
 
 ---
@@ -205,7 +367,7 @@ holdtranscribe --model tiny --beam-size 1
 
    [Service]
    Type=simple
-   ExecStart=/usr/bin/holdtranscribe --model large-v3 --beam-size 1
+   ExecStart=/usr/bin/holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts
    Restart=always
    RestartSec=5
    Environment=DISPLAY=:0
@@ -244,9 +406,8 @@ holdtranscribe --model tiny --beam-size 1
        <array>
            <string>/usr/local/bin/holdtranscribe</string>
            <string>--model</string>
-           <string>large-v3</string>
-           <string>--beam-size</string>
-           <string>1</string>
+           <string>mistralai/Voxtral-Mini-3B-2507</string>
+           <string>--tts</string>
        </array>
        <key>RunAtLoad</key>
        <true/>
@@ -268,7 +429,7 @@ holdtranscribe --model tiny --beam-size 1
 1. **Create batch file for easier management:**
    ```batch
    @echo off
-   holdtranscribe --model large-v3 --beam-size 1
+   holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts
    ```
    Save as `holdtranscribe.bat`
 
@@ -443,20 +604,74 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 **For slower systems:**
 ```bash
-# Use fastest settings
+# Use fastest settings (transcription only)
 holdtranscribe --model tiny --beam-size 1 --fast
+
+# Lightweight AI assistant without TTS
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507
 ```
 
 **For better accuracy:**
 ```bash
-# Use larger model with more processing
+# Use larger Whisper model
 holdtranscribe --model large-v3 --beam-size 5
+
+# Full AI assistant with TTS
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts
 ```
 
 **Memory management:**
 ```bash
 # Monitor memory usage
 holdtranscribe --debug
+
+# Test TTS functionality
+python examples/test_tts.py
+```
+
+### TTS-Specific Issues
+
+**Dia installation problems:**
+```bash
+# Try installing transformers version first
+pip install git+https://github.com/huggingface/transformers.git
+
+# If that fails, try native Dia
+pip install git+https://github.com/nari-labs/dia.git
+
+# Test which implementation works
+python examples/test_tts.py --method both
+```
+
+**Audio playback issues:**
+```bash
+# Linux: Install audio players
+sudo apt install mpg123 # or vlc, mplayer
+
+# macOS: Should work with default system player
+# Windows: Should work with default system player
+
+# Manual playback test
+python examples/test_tts.py --text "Test speech generation"
+```
+
+**TTS performance optimization:**
+```bash
+# Use smaller TTS model (if available)
+holdtranscribe --model mistralai/Voxtral-Mini-3B-2507 --tts --tts-model nari-labs/Dia-1.6B-0626
+
+# Monitor TTS generation time
+holdtranscribe --debug --tts
+```
+
+**TTS not working:**
+```bash
+# Check if Dia is properly installed
+python -c "from dia.model import Dia; print('Native Dia: OK')"
+python -c "from transformers import DiaForConditionalGeneration; print('Transformers Dia: OK')"
+
+# Test with minimal example
+python examples/test_tts.py --text "Hello world" --method native
 ```
 
 ---

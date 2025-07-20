@@ -1,6 +1,7 @@
 # Core dependencies
 faster-whisper>=0.9.0
 sounddevice>=0.4.6
+pydub>=0.25.0
 pynput>=1.7.6
 webrtcvad>=2.0.10
 pyperclip>=1.8.2

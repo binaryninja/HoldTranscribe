@@ -36,6 +36,11 @@ class HoldTranscribeApp:
         self.current_mode: Optional[str] = None
         self.transcription_start_time: Optional[float] = None
 
+        # Audio playback configuration
+        self.audio_buffer_size: int = 1024  # samples per buffer
+        self.audio_queue_size: int = 10     # maximum queue size
+        self.audio_timeout: float = 30.0    # playback timeout in seconds
+
         # Input handling (original implementation)
         self.transcribe_hotkey: Optional[set] = None
         self.assistant_hotkey: Optional[set] = None
@@ -93,6 +98,26 @@ Examples:
             "--tts-output",
             default="assistant_response.mp3",
             help="TTS output file pattern (default: %(default)s)"
+        )
+
+        # Audio playback configuration
+        parser.add_argument(
+            "--audio-buffer-size",
+            type=int,
+            default=1024,
+            help="Audio buffer size in samples (default: %(default)s)"
+        )
+        parser.add_argument(
+            "--audio-queue-size",
+            type=int,
+            default=10,
+            help="Audio queue maximum size (default: %(default)s)"
+        )
+        parser.add_argument(
+            "--audio-timeout",
+            type=float,
+            default=30.0,
+            help="Audio playback timeout in seconds (default: %(default)s)"
         )
 
         # Debug and performance
@@ -443,28 +468,166 @@ Examples:
     def _generate_tts(self, text: str):
         """Generate text-to-speech for assistant response."""
         try:
+            debug_print(f"_generate_tts called with text: '{text[:50]}...'")
+
             if not self.tts_model:
+                debug_print("ERROR: No TTS model available in _generate_tts")
                 return
 
-            # Generate unique filename
-            import uuid
-            output_file = f"assistant_response_{uuid.uuid4().hex[:8]}.mp3"
+            debug_print(f"TTS model available: {type(self.tts_model).__name__}")
+            debug_print(f"TTS model loaded: {getattr(self.tts_model, 'is_loaded', 'Unknown')}")
 
-            debug_print(f"Generating TTS audio: {output_file}")
-
-            if self.tts_model.synthesize(text, output_file):
-                debug_print(f"TTS audio generated: {output_file}")
-
-                # Play the audio (platform-specific)
-                self._play_audio(output_file)
-            else:
-                debug_print("TTS generation failed")
+            # For now, always use file-based synthesis for reliability
+            debug_print("Using file-based TTS synthesis")
+            self._generate_tts_file(text)
 
         except Exception as e:
             debug_print(f"TTS error: {e}")
+            import traceback
+            debug_print(f"TTS traceback: {traceback.format_exc()}")
 
-    def _play_audio(self, audio_file: str):
-        """Play audio file using system player."""
+    def _generate_tts_file(self, text: str):
+        """Generate TTS using file-based synthesis."""
+        try:
+            debug_print(f"_generate_tts_file called with text: '{text[:50]}...'")
+
+            # Check if TTS model is available and loaded
+            if not self.tts_model:
+                debug_print("ERROR: No TTS model available")
+                return
+
+            if not hasattr(self.tts_model, 'is_loaded') or not self.tts_model.is_loaded:
+                debug_print("ERROR: TTS model not loaded")
+                return
+
+            debug_print(f"TTS model info: {self.tts_model}")
+
+            # Generate unique filename
+            import uuid
+            import os
+            output_file = f"assistant_response_{uuid.uuid4().hex[:8]}.mp3"
+            full_path = os.path.abspath(output_file)
+
+            debug_print(f"Generating TTS audio file: {output_file}")
+            debug_print(f"Full path: {full_path}")
+            debug_print(f"Current working directory: {os.getcwd()}")
+
+            # Call TTS synthesis
+            debug_print("Calling TTS model synthesize method...")
+            synthesis_result = self.tts_model.synthesize(text, output_file)
+            debug_print(f"TTS synthesis result: {synthesis_result}")
+
+            if synthesis_result:
+                # Check if file was actually created
+                if os.path.exists(output_file):
+                    file_size = os.path.getsize(output_file)
+                    debug_print(f"TTS audio file created: {output_file} ({file_size} bytes)")
+                    self._play_audio_file(output_file)
+                else:
+                    debug_print(f"ERROR: TTS file was not created: {output_file}")
+            else:
+                debug_print("TTS synthesis returned False - generation failed")
+
+        except Exception as e:
+            debug_print(f"TTS file generation error: {e}")
+            import traceback
+            debug_print(f"Traceback: {traceback.format_exc()}")
+
+    def _play_audio_stream(self, audio_stream):
+        """Play streaming audio directly to the audio device with proper buffering."""
+        debug_print("_play_audio_stream called (currently disabled)")
+        # Streaming playback temporarily disabled for debugging
+        return
+
+    def _play_audio_file(self, audio_file: str):
+        """Play audio file directly using sounddevice."""
+        debug_print(f"_play_audio_file called with: {audio_file}")
+
+        try:
+            import sounddevice as sd
+            import numpy as np
+            import threading
+            import os
+
+            # Check file existence first
+            if not os.path.exists(audio_file):
+                debug_print(f"ERROR: Audio file does not exist: {audio_file}")
+                debug_print(f"Current working directory: {os.getcwd()}")
+                debug_print(f"Files in current directory: {os.listdir('.')}")
+                return
+
+            file_size = os.path.getsize(audio_file)
+            debug_print(f"Audio file exists: {audio_file} ({file_size} bytes)")
+
+            try:
+                from pydub import AudioSegment
+                debug_print("pydub imported successfully")
+            except ImportError as pydub_error:
+                debug_print(f"pydub not available: {pydub_error}")
+                debug_print("falling back to system player")
+                self._play_audio_system(audio_file)
+                return
+
+            def play_file():
+                try:
+                    debug_print(f"Thread: Loading audio file: {audio_file}")
+
+                    # Load audio file using pydub
+                    debug_print("Thread: Calling AudioSegment.from_file...")
+                    audio = AudioSegment.from_file(audio_file)
+                    debug_print(f"Thread: Audio loaded: {audio.frame_rate}Hz, {audio.channels}ch, {len(audio)}ms")
+
+                    # Convert to numpy array
+                    debug_print("Thread: Converting to numpy array...")
+                    audio_data = np.array(audio.get_array_of_samples(), dtype=np.float32)
+                    debug_print(f"Thread: Original audio data range: {audio_data.min()} to {audio_data.max()}")
+
+                    # Normalize to [-1, 1] range
+                    audio_data = audio_data / np.iinfo(audio.array_type).max
+                    debug_print(f"Thread: Normalized audio data range: {audio_data.min()} to {audio_data.max()}")
+
+                    # Handle stereo/mono conversion
+                    if audio.channels == 2:
+                        audio_data = audio_data.reshape((-1, 2))
+
+                    debug_print(f"Thread: Audio data shape: {audio_data.shape}")
+                    debug_print("Thread: Starting sounddevice playback...")
+
+                    # Use simple blocking playback for now
+                    sd.play(audio_data, samplerate=audio.frame_rate, blocking=True)
+                    debug_print("Thread: Audio playback completed successfully")
+
+                    # Clean up the temporary file after playing
+                    try:
+                        os.remove(audio_file)
+                        debug_print(f"Thread: Cleaned up temporary audio file: {audio_file}")
+                    except Exception as cleanup_error:
+                        debug_print(f"Thread: Warning: Could not clean up audio file {audio_file}: {cleanup_error}")
+
+                except Exception as play_error:
+                    debug_print(f"Thread: Direct audio playback failed: {play_error}")
+                    import traceback
+                    debug_print(f"Thread: Playback traceback: {traceback.format_exc()}")
+                    # Fallback to system player
+                    debug_print("Thread: Attempting fallback to system player...")
+                    self._play_audio_system(audio_file)
+
+            # Play audio in a separate thread to avoid blocking
+            debug_print("Starting audio playback thread...")
+            play_thread = threading.Thread(target=play_file)
+            play_thread.daemon = True
+            play_thread.start()
+
+        except ImportError as e:
+            debug_print(f"Import error: {e}")
+            debug_print(f"Falling back to system player")
+            self._play_audio_system(audio_file)
+        except Exception as e:
+            debug_print(f"Audio file playback setup failed: {e}")
+            self._play_audio_system(audio_file)
+
+    def _play_audio_system(self, audio_file: str):
+        """Fallback audio playback using system player."""
         try:
             import platform
             import subprocess
@@ -492,13 +655,18 @@ Examples:
                     debug_print(f"Playing audio with xdg-open: {audio_file}")
 
         except Exception as e:
-            debug_print(f"Audio playback failed: {e}")
+            debug_print(f"System audio playback failed: {e}")
 
     def run(self) -> int:
         """Run the main application."""
         try:
             # Parse arguments
             self.args = self.parse_arguments()
+
+            # Apply audio configuration from arguments
+            self.audio_buffer_size = self.args.audio_buffer_size
+            self.audio_queue_size = self.args.audio_queue_size
+            self.audio_timeout = self.args.audio_timeout
 
             # Setup debug mode
             set_debug(self.args.debug)

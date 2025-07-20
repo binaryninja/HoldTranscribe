@@ -26,7 +26,7 @@ class ElevenLabsTTSWrapper(TTSModel):
 
         # Extract ElevenLabs-specific parameters
         self.api_key = kwargs.get('api_key')
-        self.voice_id = kwargs.get('voice_id', "21m00Tcm4TlvDq8ikWAM")
+        self.voice_id = kwargs.get('voice_id', "0r9ASVieiCDRpXbR4dCC") # 21m00Tcm4TlvDq8ikWAM
         self.voice_settings = kwargs.get('voice_settings')
         self.output_format = kwargs.get('output_format', "mp3_44100_128")
 

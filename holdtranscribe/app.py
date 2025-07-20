@@ -40,6 +40,7 @@ class HoldTranscribeApp:
         self.audio_buffer_size: int = 1024  # samples per buffer
         self.audio_queue_size: int = 10     # maximum queue size
         self.audio_timeout: float = 30.0    # playback timeout in seconds
+        self.force_file_tts: bool = False   # force file-based TTS synthesis
 
         # Input handling (original implementation)
         self.transcribe_hotkey: Optional[set] = None
@@ -98,6 +99,11 @@ Examples:
             "--tts-output",
             default="assistant_response.mp3",
             help="TTS output file pattern (default: %(default)s)"
+        )
+        parser.add_argument(
+            "--force-file-tts",
+            action="store_true",
+            help="Force file-based TTS synthesis (disable streaming)"
         )
 
         # Audio playback configuration
@@ -477,9 +483,48 @@ Examples:
             debug_print(f"TTS model available: {type(self.tts_model).__name__}")
             debug_print(f"TTS model loaded: {getattr(self.tts_model, 'is_loaded', 'Unknown')}")
 
-            # For now, always use file-based synthesis for reliability
-            debug_print("Using file-based TTS synthesis")
-            self._generate_tts_file(text)
+            # Check if file-based TTS is forced
+            if self.force_file_tts:
+                debug_print("File-based TTS forced via --force-file-tts")
+                self._generate_tts_file(text)
+                return
+
+            # Check if the TTS model supports streaming
+            try:
+                # Safely attempt streaming synthesis
+                streaming_method = getattr(self.tts_model, 'synthesize_streaming', None)
+                if streaming_method and callable(streaming_method):
+                    debug_print("Using streaming TTS playback")
+                    # Try multiple formats in order of preference
+                    formats_to_try = ["pcm_22050", "pcm_16000", "mp3_44100_128"]
+                    audio_stream = None
+
+                    for format_attempt in formats_to_try:
+                        try:
+                            debug_print(f"Trying streaming format: {format_attempt}")
+                            audio_stream = streaming_method(text, output_format=format_attempt)
+                            if audio_stream:
+                                debug_print(f"Successfully got stream with format: {format_attempt}")
+                                break
+                        except Exception as format_error:
+                            debug_print(f"Format {format_attempt} failed: {str(format_error)[:200]}")
+                            continue
+
+                    if audio_stream:
+                        streaming_success = self._play_audio_stream(audio_stream, text)
+                        if not streaming_success:
+                            debug_print("Streaming playback failed, falling back to file-based")
+                            self._generate_tts_file(text)
+                    else:
+                        debug_print("All streaming formats failed, falling back to file-based")
+                        self._generate_tts_file(text)
+                else:
+                    # Fallback to file-based synthesis
+                    debug_print("TTS model doesn't support streaming, using file-based")
+                    self._generate_tts_file(text)
+            except (AttributeError, TypeError, Exception) as e:
+                debug_print(f"Streaming TTS error: {e}, falling back to file-based")
+                self._generate_tts_file(text)
 
         except Exception as e:
             debug_print(f"TTS error: {e}")
@@ -533,11 +578,315 @@ Examples:
             import traceback
             debug_print(f"Traceback: {traceback.format_exc()}")
 
-    def _play_audio_stream(self, audio_stream):
+    def _play_audio_stream(self, audio_stream, fallback_text=""):
         """Play streaming audio directly to the audio device with proper buffering."""
-        debug_print("_play_audio_stream called (currently disabled)")
-        # Streaming playback temporarily disabled for debugging
-        return
+        debug_print("Starting streaming audio playback...")
+
+        try:
+            import sounddevice as sd
+            import numpy as np
+            import io
+            import threading
+            import queue
+            import time
+
+            try:
+                from pydub import AudioSegment
+                debug_print("pydub imported for streaming playback")
+            except ImportError:
+                debug_print("pydub not available for streaming playback, falling back")
+                return
+
+            # Audio configuration
+            sample_rate = 22050  # ElevenLabs default (will be updated)
+            channels = 1  # mono (will be updated)
+            chunk_queue = queue.Queue(maxsize=self.audio_queue_size)
+            playback_finished = threading.Event()
+            stream_ended = threading.Event()
+            audio_format_detected = threading.Event()
+            playback_started = threading.Event()
+            min_preload_chunks = max(3, self.audio_queue_size // 3)  # Preload some chunks
+
+            def audio_callback(outdata, frames, time, status):
+                """Callback function for sounddevice OutputStream."""
+                if status:
+                    debug_print(f"Audio callback status: {status}")
+
+                try:
+                    # Monitor queue level for debugging
+                    queue_size = chunk_queue.qsize()
+                    if queue_size < 2:  # Low buffer warning
+                        debug_print(f"Low audio buffer: {queue_size} chunks remaining")
+
+                    # Get audio data from queue
+                    chunk_data = chunk_queue.get_nowait()
+                    if chunk_data is None:  # End of stream signal
+                        debug_print("Audio stream ended")
+                        playback_finished.set()
+                        raise sd.CallbackStop
+
+                    # Ensure data fits the buffer
+                    if len(chunk_data) < frames:
+                        # Pad with zeros if chunk is shorter than buffer
+                        padding = np.zeros(frames - len(chunk_data), dtype=np.float32)
+                        chunk_data = np.concatenate([chunk_data, padding])
+                    elif len(chunk_data) > frames:
+                        # Take only what we need and put the rest back
+                        remainder = chunk_data[frames:]
+                        chunk_data = chunk_data[:frames]
+                        # Put remainder back in queue for next callback
+                        try:
+                            chunk_queue.put_nowait(remainder)
+                        except queue.Full:
+                            debug_print("Audio queue full, dropping remainder")
+
+                    if outdata.shape[1] == 1:  # Mono output
+                        outdata[:, 0] = chunk_data[:frames]
+                    else:  # Stereo output, duplicate mono to both channels
+                        outdata[:, 0] = chunk_data[:frames]
+                        outdata[:, 1] = chunk_data[:frames]
+
+                except queue.Empty:
+                    # No data available, output silence to prevent gaps
+                    outdata.fill(0)
+                    if playback_started.is_set():
+                        debug_print("Audio underrun - no data available")
+                except Exception as callback_error:
+                    debug_print(f"Audio callback error: {callback_error}")
+                    import traceback
+                    debug_print(f"Callback traceback: {traceback.format_exc()}")
+                    outdata.fill(0)
+
+            def stream_processor():
+                """Process streaming audio chunks and queue them for playback."""
+                nonlocal sample_rate, channels
+                try:
+                    debug_print("Starting stream processor...")
+                    chunk_count = 0
+                    audio_buffer = b''  # Buffer for accumulating MP3 data
+                    min_buffer_size = 4096  # Smaller buffer for lower latency
+                    audio_initialized = False
+                    decode_failures = 0
+                    max_decode_failures = 5
+
+                    for audio_chunk in audio_stream:
+                        if stream_ended.is_set():
+                            break
+
+                        if audio_chunk:
+                            chunk_count += 1
+                            debug_print(f"Received audio chunk {chunk_count} ({len(audio_chunk)} bytes)")
+
+                            # Add chunk to buffer
+                            audio_buffer += audio_chunk
+
+                            # Try to decode when we have enough data (more frequent attempts)
+                            if len(audio_buffer) >= min_buffer_size or chunk_count % 5 == 0:
+                                try:
+                                    # Try PCM format first, then fall back to MP3
+                                    try:
+                                        # Assume PCM data: 16-bit, 44100Hz, mono
+                                        audio_data = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32)
+                                        audio_data = audio_data / 32768.0  # Normalize to [-1, 1]
+
+                                        # Initialize audio parameters for PCM (detect from chunk size)
+                                        if not audio_initialized:
+                                            # Calculate sample rate based on chunk size assumption
+                                            if len(audio_buffer) >= 4096:
+                                                # Estimate: 16-bit samples, so bytes/2 = samples
+                                                samples_per_chunk = len(audio_buffer) // 2
+                                                # Common rates: 16000, 22050, 44100
+                                                if samples_per_chunk > 1024:
+                                                    sample_rate = 22050
+                                                else:
+                                                    sample_rate = 16000
+                                            else:
+                                                sample_rate = 22050  # Default
+                                            channels = 1
+                                            audio_initialized = True
+                                            audio_format_detected.set()
+                                            debug_print(f"Audio format initialized (PCM): {sample_rate}Hz, {channels}ch")
+
+                                        # Split into playback chunks for smoother audio
+                                        chunk_size = max(256, self.audio_buffer_size // 2)
+                                        chunks_queued = 0
+                                        for i in range(0, len(audio_data), chunk_size):
+                                            sub_chunk = audio_data[i:i + chunk_size]
+                                            chunk_queue.put(sub_chunk, timeout=10.0)
+                                            chunks_queued += 1
+
+                                        debug_print(f"Decoded {len(audio_data)} PCM samples from {len(audio_buffer)} bytes -> {chunks_queued} chunks")
+
+                                    except (ValueError, TypeError):
+                                        # Fallback to MP3 decoding
+                                        audio_segment = AudioSegment.from_file(
+                                            io.BytesIO(audio_buffer),
+                                            format="mp3"
+                                        )
+
+                                        # Initialize audio parameters from first successful decode
+                                        if not audio_initialized:
+                                            sample_rate = audio_segment.frame_rate
+                                            channels = audio_segment.channels
+                                            audio_initialized = True
+                                            audio_format_detected.set()  # Signal that format is known
+                                            debug_print(f"Audio format initialized (MP3): {sample_rate}Hz, {channels}ch")
+
+                                        # Convert to numpy array
+                                        audio_data = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
+                                        audio_data = audio_data / np.iinfo(audio_segment.array_type).max
+
+                                        # Handle stereo to mono conversion if needed
+                                        if audio_segment.channels == 2:
+                                            audio_data = audio_data.reshape((-1, 2))
+                                            audio_data = np.mean(audio_data, axis=1)  # Convert to mono
+
+                                        # Split into smaller playback chunks for smoother audio
+                                        chunk_size = max(256, self.audio_buffer_size // 2)
+                                        chunks_queued = 0
+                                        for i in range(0, len(audio_data), chunk_size):
+                                            sub_chunk = audio_data[i:i + chunk_size]
+                                            chunk_queue.put(sub_chunk, timeout=10.0)
+                                            chunks_queued += 1
+
+                                        debug_print(f"Decoded {len(audio_data)} MP3 samples from {len(audio_buffer)} bytes -> {chunks_queued} chunks")
+
+                                    # Signal when we have enough chunks to start playback
+                                    if chunk_queue.qsize() >= min_preload_chunks and not playback_started.is_set():
+                                        debug_print(f"Preload complete: {chunk_queue.qsize()} chunks ready")
+                                        playback_started.set()
+
+                                    # Clear buffer after successful decode
+                                    audio_buffer = b''
+
+                                except Exception as decode_error:
+                                    # If decode fails, keep accumulating more data
+                                    decode_failures += 1
+                                    debug_print(f"Decode attempt failed ({decode_failures}/{max_decode_failures}) with {len(audio_buffer)} bytes: {str(decode_error)[:100]}")
+
+                                    # If we have too many decode failures, abort streaming
+                                    if decode_failures >= max_decode_failures:
+                                        debug_print("Too many decode failures, aborting streaming")
+                                        stream_ended.set()
+                                        return False
+                                    continue
+
+                    # Process any remaining buffered data at end of stream
+                    if audio_buffer:
+                        try:
+                            debug_print(f"Processing final buffer: {len(audio_buffer)} bytes")
+                            # Try PCM first, then MP3
+                            try:
+                                audio_data = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32)
+                                audio_data = audio_data / 32768.0
+                                debug_print("Final buffer processed as PCM")
+                            except (ValueError, TypeError):
+                                audio_segment = AudioSegment.from_file(
+                                    io.BytesIO(audio_buffer),
+                                    format="mp3"
+                                )
+                                audio_data = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
+                                audio_data = audio_data / np.iinfo(audio_segment.array_type).max
+
+                                if audio_segment.channels == 2:
+                                    audio_data = audio_data.reshape((-1, 2))
+                                    audio_data = np.mean(audio_data, axis=1)
+                                debug_print("Final buffer processed as MP3")
+
+                            chunk_size = self.audio_buffer_size
+                            for i in range(0, len(audio_data), chunk_size):
+                                sub_chunk = audio_data[i:i + chunk_size]
+                                chunk_queue.put(sub_chunk, timeout=10.0)
+
+                            debug_print("Final buffer processed successfully")
+                            return True
+                        except Exception as final_error:
+                            debug_print(f"Failed to process final buffer: {final_error}")
+                            return False
+
+                    # Signal end of stream
+                    debug_print(f"Stream processing complete. Processed {chunk_count} chunks.")
+                    chunk_queue.put(None, timeout=10.0)
+                    return True
+
+                except Exception as stream_error:
+                    debug_print(f"Stream processor error: {stream_error}")
+                    import traceback
+                    debug_print(f"Stream processor traceback: {traceback.format_exc()}")
+                    chunk_queue.put(None)  # Signal end even on error
+                    return False
+
+            def play_stream():
+                """Main streaming playback coordinator."""
+                streaming_success = [False]  # Use list to allow modification from nested function
+
+                def processor_wrapper():
+                    streaming_success[0] = stream_processor()
+
+                try:
+                    # Start stream processor
+                    processor_thread = threading.Thread(target=processor_wrapper)
+                    processor_thread.daemon = True
+                    processor_thread.start()
+
+                    # Wait for audio format to be detected
+                    debug_print("Waiting for audio format detection...")
+                    if audio_format_detected.wait(timeout=10.0):
+                        debug_print(f"Audio format detected: {sample_rate}Hz, {channels}ch")
+
+                        # Wait for initial buffering before starting playback
+                        debug_print(f"Waiting for preload ({min_preload_chunks} chunks)...")
+                        if playback_started.wait(timeout=15.0):
+                            debug_print(f"Starting audio stream: {sample_rate}Hz, {channels}ch")
+
+                            # Create and start audio output stream with detected parameters
+                            with sd.OutputStream(
+                                samplerate=sample_rate,
+                                channels=channels,
+                                callback=audio_callback,
+                                blocksize=max(256, self.audio_buffer_size // 2),
+                                dtype=np.float32,
+                                latency='low'
+                            ):
+                                # Wait for playback to complete
+                                if playback_finished.wait(timeout=self.audio_timeout):
+                                    debug_print("Streaming audio playback completed successfully")
+                                else:
+                                    debug_print("Streaming audio playback timed out")
+                                    stream_ended.set()
+
+                                # Wait for processor thread to complete
+                                processor_thread.join(timeout=5.0)
+                                return streaming_success[0]
+                        else:
+                            debug_print("Preload timeout - starting anyway")
+                            stream_ended.set()
+                            return False
+                    else:
+                        debug_print("Audio format detection timed out")
+                        stream_ended.set()
+                        return False
+
+                except Exception as playback_error:
+                    debug_print(f"Streaming playback error: {playback_error}")
+                    import traceback
+                    debug_print(f"Playback traceback: {traceback.format_exc()}")
+                    return False
+
+            # Start streaming playback and return success status
+            debug_print("Starting streaming playback thread...")
+            return play_stream()
+
+        except ImportError as e:
+            debug_print(f"Streaming audio requires additional dependencies: {e}")
+            debug_print("Falling back to file-based synthesis")
+            return False
+        except Exception as e:
+            debug_print(f"Streaming audio setup failed: {e}")
+            import traceback
+            debug_print(f"Streaming setup traceback: {traceback.format_exc()}")
+            debug_print("Falling back to file-based synthesis")
+            return False
 
     def _play_audio_file(self, audio_file: str):
         """Play audio file directly using sounddevice."""
@@ -667,6 +1016,7 @@ Examples:
             self.audio_buffer_size = self.args.audio_buffer_size
             self.audio_queue_size = self.args.audio_queue_size
             self.audio_timeout = self.args.audio_timeout
+            self.force_file_tts = self.args.force_file_tts
 
             # Setup debug mode
             set_debug(self.args.debug)
